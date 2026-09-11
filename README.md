@@ -53,7 +53,7 @@ then reconciles balances. Exits 0 on PASS.
 
 ```bash
 make venv          # local virtualenv + dev deps
-make test          # 14 tests incl. the concurrency gate, against a real
+make test          # 15 tests incl. the concurrency gate, against a real
                    # throwaway Postgres (TEST_ADMIN_DATABASE_URL to point
                    # elsewhere; defaults to local Postgres)
 ```
