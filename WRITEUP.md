@@ -97,7 +97,7 @@ a public Better Stack dashboard.
 
 ## AI usage
 
-I used an AI coding agent heavily. I decided the stack, the
+I used an AI coding agent for implementation. I decided the stack, the
 single-transaction design with constraint-based arbitration, the
 idempotency record in the transfer row, persisting rejections,
 deterministic lock ordering, consistency over availability, the status
