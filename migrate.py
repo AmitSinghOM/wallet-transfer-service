@@ -15,6 +15,8 @@ import sys
 
 import asyncpg
 
+from app.config import _normalize_dsn
+
 MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
 LOCK_KEY = 74_1001  # arbitrary app-wide advisory lock id for migrations
 
@@ -24,7 +26,7 @@ async def migrate() -> int:
     if not dsn:
         print("DATABASE_URL is not set", file=sys.stderr)
         return 2
-    conn = await asyncpg.connect(dsn)
+    conn = await asyncpg.connect(_normalize_dsn(dsn))
     applied_count = 0
     try:
         async with conn.transaction():

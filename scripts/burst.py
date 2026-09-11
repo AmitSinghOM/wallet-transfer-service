@@ -37,6 +37,21 @@ def fail(msg: str) -> None:
 
 async def main(base: str) -> None:
     async with httpx.AsyncClient(base_url=base, timeout=30) as c:
+        # 0) warm up: free-tier hosts spin down when idle and take up to
+        # ~60s to wake; wait for readiness (app + database) before timing
+        # anything that matters.
+        for attempt in range(12):
+            try:
+                r = await c.get("/readyz")
+                if r.status_code == 200:
+                    break
+                print(f"warm-up: /readyz -> {r.status_code}, retrying…")
+            except httpx.HTTPError as e:
+                print(f"warm-up: {type(e).__name__}, retrying…")
+            await asyncio.sleep(5)
+        else:
+            fail("service not ready after 60s")
+
         # 1) two brand-new users
         users = []
         for _ in range(2):

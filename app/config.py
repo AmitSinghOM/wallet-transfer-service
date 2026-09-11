@@ -27,6 +27,7 @@ def load_settings() -> Settings:
     database_url = os.environ.get("DATABASE_URL", "")
     if not database_url:
         raise RuntimeError("DATABASE_URL must be set")
+    database_url = _normalize_dsn(database_url)
     return Settings(
         database_url=database_url,
         jwt_secret=jwt_secret,
@@ -36,3 +37,16 @@ def load_settings() -> Settings:
         db_pool_min=int(os.environ.get("DB_POOL_MIN", "2")),
         db_pool_max=int(os.environ.get("DB_POOL_MAX", "10")),
     )
+
+
+def _normalize_dsn(dsn: str) -> str:
+    """Strip libpq-only query parameters that asyncpg would forward to the
+    server as (invalid) settings. Neon's default connection string carries
+    `channel_binding=require`; TLS is still enforced via sslmode."""
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    parts = urlsplit(dsn)
+    if not parts.query:
+        return dsn
+    kept = [(k, v) for k, v in parse_qsl(parts.query) if k != "channel_binding"]
+    return urlunsplit(parts._replace(query=urlencode(kept)))
