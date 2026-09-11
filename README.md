@@ -80,3 +80,7 @@ committed.
    concurrent replicas are safe).
 4. Logs: the platform's public log stream shows structured JSON with a
    correlation id per request.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
