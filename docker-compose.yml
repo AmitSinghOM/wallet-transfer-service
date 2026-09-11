@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet_local_only
+      POSTGRES_DB: wallet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet -d wallet"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://wallet:wallet_local_only@db:5432/wallet
+      APP_ENV: development
+      # JWT_SECRET intentionally unset locally -> dev fallback.
+      # In any real deployment it MUST come from the environment.
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:
