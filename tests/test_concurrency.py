@@ -135,6 +135,49 @@ async def test_opposite_direction_transfers_do_not_deadlock(client):
     assert rb.json()["balance_paise"] == GRANT
 
 
+async def test_bidirectional_first_transfers_brand_new_pair(client, test_db_url):
+    """The hardest composite case: BOTH wallets absent, concurrent transfers
+    in BOTH directions. Wallet creation itself must follow the deterministic
+    lock order or opposite-order inserts deadlock (40P01 -> 500). Each wallet
+    created exactly once, no 5xx, conservation holds."""
+    a, b = await register(client), await register(client)
+
+    async def fire(frm, to, i, tag):
+        return await client.post(
+            "/transfers",
+            headers=auth(frm["token"]),
+            json={
+                "to_user": to["user_id"],
+                "amount_paise": 300,
+                "idempotency_key": f"fresh-{tag}-{i}",
+            },
+        )
+
+    tasks = []
+    for i in range(10):
+        tasks.append(fire(a, b, i, "ab"))
+        tasks.append(fire(b, a, i, "ba"))
+    responses = await asyncio.gather(*tasks)
+    assert all(r.status_code == 200 for r in responses), [
+        r.status_code for r in responses
+    ]
+
+    conn = await asyncpg.connect(test_db_url)
+    try:
+        for uid in (a["user_id"], b["user_id"]):
+            n = await conn.fetchval(
+                "SELECT count(*) FROM wallets WHERE user_id = $1", uid
+            )
+            assert n == 1
+        total = await conn.fetchval(
+            "SELECT sum(balance_paise) FROM wallets WHERE user_id = ANY($1::uuid[])",
+            [a["user_id"], b["user_id"]],
+        )
+        assert total == 2 * GRANT
+    finally:
+        await conn.close()
+
+
 async def test_overspend_impossible_under_concurrency(client, test_db_url):
     """Fire 30 concurrent 10k transfers from a wallet holding 100k: exactly
     10 may succeed, 20 reject with 402, balance lands on exactly 0."""

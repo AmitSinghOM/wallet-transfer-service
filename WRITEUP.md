@@ -14,7 +14,10 @@ the last-resort overspend guard beneath the application logic.
 Everything happens in **one Postgres transaction**: (1) get-or-create
 both wallets with `INSERT … ON CONFLICT (user_id) DO NOTHING` — the
 primary key arbitrates the race, so two concurrent first-transfers
-create each wallet exactly once and nobody 500s; (2) claim the
+create each wallet exactly once and nobody 500s; creation runs in the
+same ascending-id order as the row locks, so opposite-direction first
+transfers between a brand-new pair can't deadlock on the inserts;
+(2) claim the
 idempotency key by inserting the transfer row itself; (3) lock both
 wallet rows `SELECT … FOR UPDATE` in ascending-id order (deterministic
 order ⇒ no A→B/B→A deadlock), check funds, apply both balance updates.
@@ -83,8 +86,9 @@ forward-only SQL, applied at startup under a Postgres advisory lock
 Structured JSON logs, one correlation id per request (honours
 `X-Request-ID`), logging the meaningful events: `transfer_applied`,
 `transfer_rejected_insufficient_funds`, `idempotent_replay`,
-`idempotency_conflict`, `wallet_created_in_transfer` (the request that
-lost the get-or-create race logs its outcome), `auth_failure`.
+`idempotency_conflict`, `wallet_created_in_transfer`,
+`get_or_create_race_lost` (a request that hit the insert conflict after
+seeing the wallet absent — the loser of the race), `auth_failure`.
 `/metrics` (Prometheus): request count, latency histogram (p99-capable
 buckets), error rate, transfers applied/rejected by reason.
 

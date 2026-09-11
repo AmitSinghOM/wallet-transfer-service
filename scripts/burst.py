@@ -5,26 +5,29 @@
 
 What it does (mirrors the graders' probe):
   1. Registers two BRAND-NEW users (no wallets yet).
-  2. Fires N concurrent first-transfers A->B with unique idempotency keys —
-     the get-or-create race happens inside these.
+  2. Fires N concurrent first-transfers BETWEEN them (both directions,
+     unique idempotency keys) — the get-or-create race and the
+     opposite-direction lock ordering both happen inside these.
   3. Fires M concurrent retries of ONE transfer with the SAME key.
   4. Reconciles: exactly the right amount moved, retries applied once,
      wallets created exactly once, no 5xx anywhere.
 
 Exits 0 on PASS, 1 on FAIL. Needs only httpx (pip install httpx).
+Set BURST_GRANT_PAISE if the deployment overrides WELCOME_GRANT_PAISE.
 """
 
 import asyncio
+import os
 import secrets
 import sys
 
 import httpx
 
-N_UNIQUE = 20          # concurrent first-transfers, unique keys
+N_EACH_WAY = 10        # concurrent first-transfers per direction
 N_RETRIES = 20         # concurrent retries of one key
 AMOUNT = 1_000         # paise per unique transfer
-RETRY_AMOUNT = 7_777   # paise for the retried transfer
-GRANT = 100_000        # WELCOME_GRANT_PAISE (see .env.example)
+RETRY_AMOUNT = 7_777   # paise for the retried transfer (A->B)
+GRANT = int(os.environ.get("BURST_GRANT_PAISE", "100000"))
 
 
 def fail(msg: str) -> None:
@@ -51,24 +54,38 @@ async def main(base: str) -> None:
         ha = {"Authorization": f"Bearer {a['token']}"}
         hb = {"Authorization": f"Bearer {b['token']}"}
 
-        # 2) concurrent first-transfers, unique keys (get-or-create race)
-        async def unique_transfer(i: int):
+        # 2) concurrent first-transfers BETWEEN the pair, unique keys —
+        # exercises the get-or-create race AND opposite-direction locking.
+        async def transfer(headers, to_user, i, tag):
             return await c.post(
                 "/transfers",
-                headers=ha,
+                headers=headers,
                 json={
-                    "to_user": b["user_id"],
+                    "to_user": to_user,
                     "amount_paise": AMOUNT,
-                    "idempotency_key": f"burst-unique-{i}",
+                    "idempotency_key": f"burst-{tag}-{i}",
                 },
             )
 
-        rs = await asyncio.gather(*[unique_transfer(i) for i in range(N_UNIQUE)])
+        tasks = []
+        for i in range(N_EACH_WAY):
+            tasks.append(transfer(ha, b["user_id"], i, "ab"))
+            tasks.append(transfer(hb, a["user_id"], i, "ba"))
+        rs = await asyncio.gather(*tasks)
         codes = [r.status_code for r in rs]
         if any(code >= 500 for code in codes):
             fail(f"5xx during unique burst: {codes}")
-        applied = sum(1 for code in codes if code == 200)
-        print(f"unique burst: {applied}/{N_UNIQUE} applied, statuses={sorted(set(codes))}")
+        applied_ab = sum(
+            1 for r in rs[0::2] if r.status_code == 200
+        )
+        applied_ba = sum(
+            1 for r in rs[1::2] if r.status_code == 200
+        )
+        print(
+            f"unique burst: A->B {applied_ab}/{N_EACH_WAY}, "
+            f"B->A {applied_ba}/{N_EACH_WAY} applied, "
+            f"statuses={sorted(set(codes))}"
+        )
 
         # 3) concurrent retries of ONE key
         async def retry_transfer():
@@ -92,12 +109,12 @@ async def main(base: str) -> None:
             fail(f"retry storm produced {len(ids)} distinct transfers (want 1)")
         print(f"retry storm: {N_RETRIES} retries -> 1 transfer {list(ids)[0][:8]}…")
 
-        # 4) reconcile balances
+        # 4) reconcile balances against what actually applied
         ra = (await c.get("/accounts/me", headers=ha)).json()
         rb = (await c.get("/accounts/me", headers=hb)).json()
-        moved = applied * AMOUNT + RETRY_AMOUNT
-        want_a = GRANT - moved
-        want_b = GRANT + moved
+        net_a_to_b = (applied_ab - applied_ba) * AMOUNT + RETRY_AMOUNT
+        want_a = GRANT - net_a_to_b
+        want_b = GRANT + net_a_to_b
         print(f"balances: A={ra['balance_paise']} (want {want_a}), "
               f"B={rb['balance_paise']} (want {want_b})")
         if ra["balance_paise"] != want_a or rb["balance_paise"] != want_b:

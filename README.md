@@ -21,8 +21,8 @@ Interactive API docs at `http://localhost:8000/docs`.
 |---|---|---|
 | POST | `/auth/register` | `{username, password}` → `201 {user_id, token}` |
 | POST | `/auth/login` | → `{user_id, token}` |
-| POST | `/accounts` | get-or-create caller's wallet (idempotent) → `{balance_paise}` |
-| GET | `/accounts/me` | caller's balance |
+| POST | `/accounts` | get-or-create caller's wallet (idempotent) → `{balance, balance_paise}` |
+| GET | `/accounts/me` | caller's balance → `{balance, balance_paise}` (same integer-paise value, two names) |
 | POST | `/transfers` | `{to_user, amount_paise, idempotency_key}` → `{transfer_id, new_balance}` |
 | GET | `/transfers/{id}` | participants only |
 | GET | `/healthz` `/readyz` | liveness / readiness (readiness checks the DB) |

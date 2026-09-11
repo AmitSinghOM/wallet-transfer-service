@@ -63,9 +63,11 @@ async def test_account_get_or_create_is_idempotent(client):
     assert r1.status_code == 200 and r2.status_code == 200
     assert r1.json() == r2.json()
     assert r1.json()["balance_paise"] == GRANT
+    assert r1.json()["balance"] == GRANT  # brief's literal field name
 
     r = await client.get("/accounts/me", headers=auth(u["token"]))
     assert r.json()["balance_paise"] == GRANT
+    assert r.json()["balance"] == GRANT
 
 
 async def test_me_without_wallet_404(client):

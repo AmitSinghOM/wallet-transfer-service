@@ -68,7 +68,17 @@ def body_hash(to_user: uuid.UUID, amount_paise: int) -> str:
 async def get_or_create_wallet(
     conn: asyncpg.Connection, user_id: uuid.UUID, grant_paise: int
 ) -> tuple[int, bool]:
-    """Race-free get-or-create. Returns (balance, created)."""
+    """Race-free get-or-create. Returns (balance, created).
+
+    SELECT-first, INSERT on absence. When the INSERT then hits the
+    ON CONFLICT path, the wallet did not exist a moment ago but does now —
+    proof this request lost a concurrent get-or-create race, which we log
+    (it is one of the meaningful observability events)."""
+    row = await conn.fetchrow(
+        "SELECT balance_paise FROM wallets WHERE user_id = $1", user_id
+    )
+    if row is not None:
+        return row["balance_paise"], False
     row = await conn.fetchrow(
         """INSERT INTO wallets (user_id, balance_paise) VALUES ($1, $2)
            ON CONFLICT (user_id) DO NOTHING
@@ -78,7 +88,9 @@ async def get_or_create_wallet(
     )
     if row is not None:
         return row["balance_paise"], True
-    # Lost the insert (wallet already existed) — read it.
+    # Absent on SELECT, conflicting on INSERT: a concurrent request created
+    # it between our two statements. We lost the race — read theirs.
+    log_event("get_or_create_race_lost", user_id=str(user_id))
     row = await conn.fetchrow(
         "SELECT balance_paise FROM wallets WHERE user_id = $1", user_id
     )
@@ -110,10 +122,16 @@ async def execute_transfer(
 
         try:
             async with conn.transaction():
-                # 1) race-free get-or-create of both wallets
-                await get_or_create_wallet(conn, from_user, grant_paise)
-                _, created = await get_or_create_wallet(conn, to_user, grant_paise)
-                if created:
+                # 1) race-free get-or-create of both wallets, in the SAME
+                # deterministic order as the row locks below: two opposite
+                # first-transfers between a brand-new pair must not insert
+                # in opposite orders (index-entry deadlock -> 40P01 -> 500).
+                created_map: dict[uuid.UUID, bool] = {}
+                for uid in sorted((from_user, to_user), key=str):
+                    _, created_map[uid] = await get_or_create_wallet(
+                        conn, uid, grant_paise
+                    )
+                if created_map[to_user]:
                     log_event("wallet_created_in_transfer", user_id=str(to_user))
 
                 # 2) claim the idempotency key (unique constraint arbitrates)

@@ -88,7 +88,9 @@ async def create_account(
         )
     if created:
         log_event("wallet_created", user_id=str(caller))
-    return {"user_id": str(caller), "balance_paise": balance}
+    # "balance" is the field the brief specifies; balance_paise is the same
+    # integer-paise value under an unambiguous name. Both are provided.
+    return {"user_id": str(caller), "balance": balance, "balance_paise": balance}
 
 
 @router.get("/accounts/me")
@@ -99,7 +101,7 @@ async def my_account(request: Request, caller: uuid.UUID = Depends(current_user_
     )
     if balance is None:
         raise _error(404, "NO_WALLET", "No wallet yet; POST /accounts to create one")
-    return {"user_id": str(caller), "balance_paise": balance}
+    return {"user_id": str(caller), "balance": balance, "balance_paise": balance}
 
 
 # ---------------------------------------------------------------- transfers
