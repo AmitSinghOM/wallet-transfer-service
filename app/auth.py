@@ -44,6 +44,11 @@ def _unauthorized(reason: str) -> HTTPException:
     )
 
 
+def unknown_principal() -> HTTPException:
+    """Token verified, but its subject has no user row."""
+    return _unauthorized("unknown_principal")
+
+
 async def current_user_id(request: Request) -> uuid.UUID:
     """FastAPI dependency: verified caller identity from the Bearer token."""
     auth = request.headers.get("Authorization", "")

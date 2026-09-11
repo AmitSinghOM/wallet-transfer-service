@@ -1,9 +1,11 @@
 """FastAPI application wiring."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import asyncpg
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from starlette.responses import JSONResponse
 
 from .api import router
 from .config import load_settings
@@ -34,3 +36,29 @@ app = FastAPI(
 )
 app.add_middleware(ObservabilityMiddleware)
 app.include_router(router)
+
+
+DATASTORE_ERRORS = (
+    OSError,  # connection refused / reset
+    asyncio.TimeoutError,
+    asyncpg.PostgresConnectionError,
+    asyncpg.InterfaceError,
+    asyncpg.TooManyConnectionsError,
+)
+
+
+async def datastore_unavailable(request: Request, exc: Exception):
+    """Consistency over availability: when the database is unreachable the
+    money path refuses explicitly (503 + Retry-After) rather than guessing.
+    The client retries with the same idempotency key."""
+    log_event("datastore_unavailable", path=request.url.path, error=type(exc).__name__)
+    return JSONResponse(
+        {"detail": {"code": "DATASTORE_UNAVAILABLE",
+                    "message": "Datastore unreachable; retry with the same idempotency_key"}},
+        status_code=503,
+        headers={"Retry-After": "2"},
+    )
+
+
+for _exc in DATASTORE_ERRORS:
+    app.add_exception_handler(_exc, datastore_unavailable)

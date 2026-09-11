@@ -15,7 +15,13 @@ from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, Response
 
 from . import core
-from .auth import current_user_id, hash_password, issue_token, verify_password
+from .auth import (
+    current_user_id,
+    hash_password,
+    issue_token,
+    unknown_principal,
+    verify_password,
+)
 from .obs import log_event
 
 router = APIRouter()
@@ -82,10 +88,15 @@ async def create_account(
     the same wallet, never two (wallets PK arbitrates)."""
     pool: asyncpg.Pool = request.app.state.pool
     settings = request.app.state.settings
-    async with pool.acquire() as conn:
-        balance, created = await core.get_or_create_wallet(
-            conn, caller, settings.welcome_grant_paise
-        )
+    try:
+        async with pool.acquire() as conn:
+            balance, created = await core.get_or_create_wallet(
+                conn, caller, settings.welcome_grant_paise
+            )
+    except asyncpg.ForeignKeyViolationError:
+        # Validly signed token for a user that no longer exists (e.g. the
+        # database was reset while tokens were live). Not our identity.
+        raise unknown_principal()
     if created:
         log_event("wallet_created", user_id=str(caller))
     # "balance" is the field the brief specifies; balance_paise is the same
@@ -126,6 +137,8 @@ async def create_transfer(
         )
     except core.TransferError as e:
         raise _error(e.status_code, e.code, e.message)
+    except asyncpg.ForeignKeyViolationError:
+        raise unknown_principal()
 
     headers = {"X-Idempotent-Replay": "true"} if outcome.replayed else {}
     if outcome.status == core.STATUS_REJECTED:
