@@ -7,7 +7,50 @@ user's money. FastAPI + PostgreSQL.
 
 **Design reasoning: see [WRITEUP.md](WRITEUP.md).**
 
-## Run it (one command)
+## Try the live service in 60 seconds
+
+No credentials needed — register your own users and get your own tokens.
+Free-tier host: the first request after 15 idle minutes takes up to a
+minute to wake; `scripts/burst.py` waits for `/readyz` before firing.
+
+```bash
+BASE=https://wallet-transfer-service-6v6c.onrender.com
+J='content-type: application/json'
+
+# 1. two users, two tokens (identity comes only from the token)
+A=$(curl -s -X POST $BASE/auth/register -H "$J" -d '{"username":"grader_a_'$RANDOM'","password":"grader-pass-123"}')
+B=$(curl -s -X POST $BASE/auth/register -H "$J" -d '{"username":"grader_b_'$RANDOM'","password":"grader-pass-123"}')
+AT=$(echo $A | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+BT=$(echo $B | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+BID=$(echo $B | python3 -c 'import sys,json;print(json.load(sys.stdin)["user_id"])')
+
+# 2. A's wallet (seeded with 100000 paise); B deliberately has none yet
+curl -s -X POST $BASE/accounts -H "Authorization: Bearer $AT"
+
+# 3. A -> B 25000 paise: B's wallet is created inside the transfer
+curl -s -X POST $BASE/transfers -H "Authorization: Bearer $AT" -H "$J" \
+  -d "{\"to_user\":\"$BID\",\"amount_paise\":25000,\"idempotency_key\":\"k1\"}"
+
+# 4. retry same key -> same transfer_id, X-Idempotent-Replay: true, no double move
+curl -s -i -X POST $BASE/transfers -H "Authorization: Bearer $AT" -H "$J" \
+  -d "{\"to_user\":\"$BID\",\"amount_paise\":25000,\"idempotency_key\":\"k1\"}" | grep -iE "^HTTP|replay|transfer_id"
+
+# 5. same key, different body -> 409
+curl -s -X POST $BASE/transfers -H "Authorization: Bearer $AT" -H "$J" \
+  -d "{\"to_user\":\"$BID\",\"amount_paise\":1,\"idempotency_key\":\"k1\"}"
+
+# 6. balances reconcile: 75000 + 125000 = two seeds
+curl -s $BASE/accounts/me -H "Authorization: Bearer $AT"
+curl -s $BASE/accounts/me -H "Authorization: Bearer $BT"
+
+# 7. the concurrency gate (needs: pip install httpx)
+python3 scripts/burst.py $BASE
+```
+
+Also: interactive docs at `$BASE/docs`, Prometheus metrics at
+`$BASE/metrics`, health at `$BASE/healthz` and `$BASE/readyz`.
+
+## Run it locally (one command)
 
 ```bash
 docker compose up --build     # app on http://localhost:8000, db included
