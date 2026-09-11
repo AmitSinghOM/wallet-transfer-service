@@ -191,6 +191,18 @@ async def get_transfer(
 # ------------------------------------------------------------ health/metrics
 
 
+@router.get("/")
+async def root():
+    """Landing response for the bare URL: what this is and where to look."""
+    return {
+        "service": "wallet-transfer-service",
+        "docs": "/docs",
+        "health": {"liveness": "/healthz", "readiness": "/readyz"},
+        "metrics": "/metrics",
+        "source": "https://github.com/AmitSinghOM/wallet-transfer-service",
+    }
+
+
 @router.get("/healthz")
 async def healthz():
     return {"status": "ok"}

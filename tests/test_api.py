@@ -216,6 +216,8 @@ async def test_edge_cases(client):
 
 
 async def test_health_endpoints(client):
+    r = await client.get("/")
+    assert r.status_code == 200 and r.json()["docs"] == "/docs"
     assert (await client.get("/healthz")).status_code == 200
     assert (await client.get("/readyz")).status_code == 200
     m = await client.get("/metrics")
