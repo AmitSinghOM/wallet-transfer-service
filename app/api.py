@@ -6,22 +6,22 @@ Status-code choices (defended in WRITEUP.md):
   422 validation (zero/negative amount, self-transfer)
 """
 
+import asyncio
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, Response
 
 from . import core
 from .auth import (
-    current_user_id,
-    hash_password,
+    CurrentUser,
     issue_token,
     unknown_principal,
-    verify_password,
 )
+from .datastore import DATASTORE_ERRORS, Database
 from .obs import log_event
 
 router = APIRouter()
@@ -31,12 +31,12 @@ router = APIRouter()
 
 class Credentials(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9_.-]+$")
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=15, max_length=128)
 
 
 class TransferRequest(BaseModel):
     to_user: uuid.UUID
-    amount_paise: int = Field(gt=0, le=10_00_00_00_000)  # positive, sane upper bound
+    amount_paise: int = Field(strict=True, gt=0, le=10_00_00_00_000)
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
@@ -49,13 +49,13 @@ def _error(status_code: int, code: str, message: str) -> HTTPException:
 
 @router.post("/auth/register", status_code=201)
 async def register(body: Credentials, request: Request):
-    pool: asyncpg.Pool = request.app.state.pool
+    pool: Database = request.app.state.pool
     settings = request.app.state.settings
     try:
         user_id = await pool.fetchval(
             "INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id",
             body.username,
-            hash_password(body.password),
+            await request.app.state.passwords.hash(body.password),
         )
     except asyncpg.UniqueViolationError:
         raise _error(409, "USERNAME_TAKEN", "That username is already registered")
@@ -66,13 +66,28 @@ async def register(body: Credentials, request: Request):
 
 @router.post("/auth/login")
 async def login(body: Credentials, request: Request):
-    pool: asyncpg.Pool = request.app.state.pool
+    pool: Database = request.app.state.pool
     settings = request.app.state.settings
     row = await pool.fetchrow(
         "SELECT id, password_hash FROM users WHERE username = $1", body.username
     )
-    if row is None or not verify_password(body.password, row["password_hash"]):
+    if row is None:
         raise _error(401, "BAD_CREDENTIALS", "Unknown username or wrong password")
+    valid, replacement = await request.app.state.passwords.verify(
+        body.password, row["password_hash"]
+    )
+    if not valid:
+        raise _error(401, "BAD_CREDENTIALS", "Unknown username or wrong password")
+    if replacement is not None:
+        updated = await pool.fetchval(
+            "UPDATE users SET password_hash = $1 WHERE id = $2 AND password_hash = $3 "
+            "RETURNING id",
+            replacement,
+            row["id"],
+            row["password_hash"],
+        )
+        if updated is None:
+            raise _error(401, "BAD_CREDENTIALS", "Unknown username or wrong password")
     token = issue_token(row["id"], settings.jwt_secret, settings.token_ttl_seconds)
     return {"user_id": str(row["id"]), "token": token}
 
@@ -81,12 +96,10 @@ async def login(body: Credentials, request: Request):
 
 
 @router.post("/accounts")
-async def create_account(
-    request: Request, caller: uuid.UUID = Depends(current_user_id)
-):
+async def create_account(request: Request, caller: uuid.UUID = CurrentUser):
     """Get-or-create the caller's wallet. Idempotent: calling twice returns
     the same wallet, never two (wallets PK arbitrates)."""
-    pool: asyncpg.Pool = request.app.state.pool
+    pool: Database = request.app.state.pool
     settings = request.app.state.settings
     try:
         async with pool.acquire() as conn:
@@ -105,8 +118,8 @@ async def create_account(
 
 
 @router.get("/accounts/me")
-async def my_account(request: Request, caller: uuid.UUID = Depends(current_user_id)):
-    pool: asyncpg.Pool = request.app.state.pool
+async def my_account(request: Request, caller: uuid.UUID = CurrentUser):
+    pool: Database = request.app.state.pool
     balance = await pool.fetchval(
         "SELECT balance_paise FROM wallets WHERE user_id = $1", caller
     )
@@ -122,9 +135,9 @@ async def my_account(request: Request, caller: uuid.UUID = Depends(current_user_
 async def create_transfer(
     body: TransferRequest,
     request: Request,
-    caller: uuid.UUID = Depends(current_user_id),
+    caller: uuid.UUID = CurrentUser,
 ):
-    pool: asyncpg.Pool = request.app.state.pool
+    pool: Database = request.app.state.pool
     settings = request.app.state.settings
     try:
         outcome = await core.execute_transfer(
@@ -164,9 +177,9 @@ async def create_transfer(
 async def get_transfer(
     transfer_id: uuid.UUID,
     request: Request,
-    caller: uuid.UUID = Depends(current_user_id),
+    caller: uuid.UUID = CurrentUser,
 ):
-    pool: asyncpg.Pool = request.app.state.pool
+    pool: Database = request.app.state.pool
     # Participant check is part of the WHERE clause: non-participants get the
     # same 404 as a nonexistent id (no transfer-id enumeration oracle).
     row = await pool.fetchrow(
@@ -210,11 +223,16 @@ async def healthz():
 
 @router.get("/readyz")
 async def readyz(request: Request):
-    pool: asyncpg.Pool = request.app.state.pool
+    pool: Database = request.app.state.pool
     try:
-        await pool.fetchval("SELECT 1")
-    except Exception:
-        raise HTTPException(503, detail={"code": "NOT_READY", "message": "datastore unreachable"})
+        async with asyncio.timeout(
+            request.app.state.settings.readiness_timeout_seconds
+        ):
+            await pool.fetchval("SELECT 1")
+    except DATASTORE_ERRORS:
+        raise HTTPException(
+            503, detail={"code": "NOT_READY", "message": "datastore unreachable"}
+        )
     return {"status": "ready"}
 
 

@@ -18,8 +18,8 @@ BASE=https://wallet-transfer-service-6v6c.onrender.com
 J='content-type: application/json'
 
 # 1. two users, two tokens (identity comes only from the token)
-A=$(curl -s -X POST $BASE/auth/register -H "$J" -d '{"username":"grader_a_'$RANDOM'","password":"grader-pass-123"}')
-B=$(curl -s -X POST $BASE/auth/register -H "$J" -d '{"username":"grader_b_'$RANDOM'","password":"grader-pass-123"}')
+A=$(curl -s -X POST $BASE/auth/register -H "$J" -d '{"username":"grader_a_'$RANDOM'","password":"grader-pass-12345"}')
+B=$(curl -s -X POST $BASE/auth/register -H "$J" -d '{"username":"grader_b_'$RANDOM'","password":"grader-pass-12345"}')
 AT=$(echo $A | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
 BT=$(echo $B | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
 BID=$(echo $B | python3 -c 'import sys,json;print(json.load(sys.stdin)["user_id"])')
@@ -77,6 +77,13 @@ never a header or body field. Status codes: `402` insufficient funds,
 recipient / not a participant, `422` validation (zero/negative amount,
 self-transfer).
 
+Passwords are 15–128 Unicode characters; the entire UTF-8 value is hashed
+with Argon2id, without trimming or truncation. Invalid lengths return 422.
+Authentication accepts at most two password jobs per process; excess work
+returns 503 `AUTH_BUSY` with `Retry-After: 2` rather than waiting in a queue.
+See [the password contract](WRITEUP.md#password-storage-and-cutover) for costs,
+rehashing and deployment compatibility.
+
 New wallets receive a demo starting grant (`WELCOME_GRANT_PAISE`,
 default ₹1000) so transfers are demonstrable without a top-up API.
 
@@ -95,11 +102,24 @@ then reconciles balances. Exits 0 on PASS.
 ## Tests
 
 ```bash
-make venv          # local virtualenv + dev deps
-make test          # 15 tests incl. the concurrency gate, against a real
-                   # throwaway Postgres (TEST_ADMIN_DATABASE_URL to point
-                   # elsewhere; defaults to local Postgres)
+make venv          # local virtualenv + pinned dev dependency snapshot
+make lint          # pinned Ruff lint and formatting checks
+make check         # lint + full Postgres tests + pip check
+make audit         # installed-environment dependency audit; no suppressions
 ```
+
+The database tests create and drop a throwaway database. Set
+`TEST_ADMIN_DATABASE_URL` to an isolated local PostgreSQL instance you control;
+never point it at a production or shared database. The default is local Postgres.
+Use `make PYTHON=/path/to/venv/bin/python check` to select an existing environment.
+
+`constraints-dev.txt` records the audited Python 3.12 dependency resolution used
+for local verification. `make venv` applies it; it is not a Linux image lock.
+FastAPI 0.141.0 supports the pinned Starlette 1.7.0 without introducing the
+automatic OpenTelemetry configuration added in FastAPI 0.142.0. PyJWT 2.15.1
+and pytest 9.1.1 / pytest-asyncio 1.4.0 are upgraded together with their compatible
+dependencies. Container base-image pinning, Linux dependency resolution, image
+scanning and container integration tests remain separate release gates.
 
 The concurrency tests prove: wallets created exactly once under racing
 first-transfers, retry storms apply once, opposite-direction transfers

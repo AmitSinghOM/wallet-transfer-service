@@ -1,0 +1,6 @@
+required-version = "==0.16.10"
+target-version = "py312"
+line-length = 88
+
+[lint]
+extend-select = ["B008", "BLE001", "EXE001", "RUF015", "I"]
