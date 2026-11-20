@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Correctness-gate burst: one command against a live deployment.
 
     python scripts/burst.py https://your-app.example.com
@@ -23,10 +22,10 @@ import sys
 
 import httpx
 
-N_EACH_WAY = 10        # concurrent first-transfers per direction
-N_RETRIES = 20         # concurrent retries of one key
-AMOUNT = 1_000         # paise per unique transfer
-RETRY_AMOUNT = 7_777   # paise for the retried transfer (A->B)
+N_EACH_WAY = 10  # concurrent first-transfers per direction
+N_RETRIES = 20  # concurrent retries of one key
+AMOUNT = 1_000  # paise per unique transfer
+RETRY_AMOUNT = 7_777  # paise for the retried transfer (A->B)
 GRANT = int(os.environ.get("BURST_GRANT_PAISE", "100000"))
 
 
@@ -59,7 +58,7 @@ async def main(base: str) -> None:
                 "/auth/register",
                 json={
                     "username": f"burst_{secrets.token_hex(6)}",
-                    "password": "burst-pass-123",
+                    "password": "burst-pass-12345",
                 },
             )
             r.raise_for_status()
@@ -90,12 +89,8 @@ async def main(base: str) -> None:
         codes = [r.status_code for r in rs]
         if any(code >= 500 for code in codes):
             fail(f"5xx during unique burst: {codes}")
-        applied_ab = sum(
-            1 for r in rs[0::2] if r.status_code == 200
-        )
-        applied_ba = sum(
-            1 for r in rs[1::2] if r.status_code == 200
-        )
+        applied_ab = sum(1 for r in rs[0::2] if r.status_code == 200)
+        applied_ba = sum(1 for r in rs[1::2] if r.status_code == 200)
         print(
             f"unique burst: A->B {applied_ab}/{N_EACH_WAY}, "
             f"B->A {applied_ba}/{N_EACH_WAY} applied, "
@@ -122,7 +117,7 @@ async def main(base: str) -> None:
         ids = {r.json()["transfer_id"] for r in rs}
         if len(ids) != 1:
             fail(f"retry storm produced {len(ids)} distinct transfers (want 1)")
-        print(f"retry storm: {N_RETRIES} retries -> 1 transfer {list(ids)[0][:8]}…")
+        print(f"retry storm: {N_RETRIES} retries -> 1 transfer {next(iter(ids))[:8]}…")
 
         # 4) reconcile balances against what actually applied
         ra = (await c.get("/accounts/me", headers=ha)).json()
@@ -130,8 +125,10 @@ async def main(base: str) -> None:
         net_a_to_b = (applied_ab - applied_ba) * AMOUNT + RETRY_AMOUNT
         want_a = GRANT - net_a_to_b
         want_b = GRANT + net_a_to_b
-        print(f"balances: A={ra['balance_paise']} (want {want_a}), "
-              f"B={rb['balance_paise']} (want {want_b})")
+        print(
+            f"balances: A={ra['balance_paise']} (want {want_a}), "
+            f"B={rb['balance_paise']} (want {want_b})"
+        )
         if ra["balance_paise"] != want_a or rb["balance_paise"] != want_b:
             fail("balances do not reconcile — money lost or created!")
         if ra["balance_paise"] + rb["balance_paise"] != 2 * GRANT:

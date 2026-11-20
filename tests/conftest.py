@@ -48,9 +48,7 @@ async def client(test_db_url):
 
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
-        async with AsyncClient(
-            transport=transport, base_url="http://test"
-        ) as c:
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
             yield c
 
 
@@ -59,7 +57,7 @@ async def register(client: AsyncClient, username: str | None = None) -> dict:
     username = username or f"user_{secrets.token_hex(6)}"
     r = await client.post(
         "/auth/register",
-        json={"username": username, "password": "correct-horse-9"},
+        json={"username": username, "password": "correct-horse-99"},
     )
     assert r.status_code == 201, r.text
     return r.json()

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 import asyncpg
 
+from .datastore import Database
 from .obs import (
     IDEMPOTENT_REPLAYS,
     TRANSFERS_APPLIED,
@@ -98,7 +99,7 @@ async def get_or_create_wallet(
 
 
 async def execute_transfer(
-    pool: asyncpg.Pool,
+    pool: Database,
     *,
     from_user: uuid.UUID,
     to_user: uuid.UUID,
@@ -114,9 +115,7 @@ async def execute_transfer(
     req_hash = body_hash(to_user, amount_paise)
 
     async with pool.acquire() as conn:
-        recipient = await conn.fetchval(
-            "SELECT 1 FROM users WHERE id = $1", to_user
-        )
+        recipient = await conn.fetchval("SELECT 1 FROM users WHERE id = $1", to_user)
         if recipient is None:
             raise TransferError(404, "UNKNOWN_RECIPIENT", "Recipient does not exist")
 
@@ -253,6 +252,4 @@ async def _replay(
         from_user=str(from_user),
         original_status=row["status"],
     )
-    return TransferOutcome(
-        row["id"], row["status"], row["from_balance_after"], True
-    )
+    return TransferOutcome(row["id"], row["status"], row["from_balance_after"], True)

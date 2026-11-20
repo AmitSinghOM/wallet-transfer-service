@@ -20,13 +20,13 @@ async def test_register_login_and_duplicate(client):
 
     r = await client.post(
         "/auth/register",
-        json={"username": "alice_test_1", "password": "another-pass-9"},
+        json={"username": "alice_test_1", "password": "another-pass-999"},
     )
     assert r.status_code == 409
 
     r = await client.post(
         "/auth/login",
-        json={"username": "alice_test_1", "password": "correct-horse-9"},
+        json={"username": "alice_test_1", "password": "correct-horse-99"},
     )
     assert r.status_code == 200 and r.json()["user_id"] == u["user_id"]
 

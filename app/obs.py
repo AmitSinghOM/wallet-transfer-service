@@ -11,8 +11,7 @@ import uuid
 from contextvars import ContextVar
 
 from prometheus_client import Counter, Histogram
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
+from starlette.datastructures import Headers, MutableHeaders
 
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
@@ -79,42 +78,70 @@ def log_event(event: str, **ctx) -> None:
 # ---------------------------------------------------------------- middleware
 
 
-class ObservabilityMiddleware(BaseHTTPMiddleware):
-    """Assigns a correlation id per request (honouring X-Request-ID),
-    emits one JSON log line per request, and records metrics."""
+class ObservabilityMiddleware:
+    """Records bounded request metrics and structured request logs."""
 
-    async def dispatch(self, request: Request, call_next):
-        rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex
-        request_id_var.set(rid)
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        rid = Headers(scope=scope).get("X-Request-ID") or uuid.uuid4().hex
+        token = request_id_var.set(rid)
+        method = scope["method"] if scope["method"] in _HTTP_METHODS else "OTHER"
         start = time.perf_counter()
+        status = None
+
+        async def observed_send(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                MutableHeaders(scope=message)["X-Request-ID"] = rid
+            await send(message)
+
         try:
-            response = await call_next(request)
+            await self.app(scope, receive, observed_send)
         except Exception:
             elapsed = time.perf_counter() - start
-            route = _route_pattern(request)
-            HTTP_REQUESTS.labels(request.method, route, "500").inc()
-            HTTP_LATENCY.labels(request.method, route).observe(elapsed)
+            route = _route_pattern(scope)
+            HTTP_REQUESTS.labels(method, route, "500").inc()
+            HTTP_LATENCY.labels(method, route).observe(elapsed)
             log.exception(
                 "request_failed",
-                extra={"ctx": {"method": request.method, "path": request.url.path}},
+                extra={"ctx": {"method": scope["method"], "path": scope["path"]}},
             )
             raise
-        elapsed = time.perf_counter() - start
-        route = _route_pattern(request)
-        HTTP_REQUESTS.labels(request.method, route, str(response.status_code)).inc()
-        HTTP_LATENCY.labels(request.method, route).observe(elapsed)
-        response.headers["X-Request-ID"] = rid
-        log_event(
-            "http_request",
-            method=request.method,
-            path=request.url.path,
-            status=response.status_code,
-            duration_ms=round(elapsed * 1000, 2),
-        )
-        return response
+        else:
+            if status is not None:
+                elapsed = time.perf_counter() - start
+                route = _route_pattern(scope)
+                HTTP_REQUESTS.labels(method, route, str(status)).inc()
+                HTTP_LATENCY.labels(method, route).observe(elapsed)
+                log_event(
+                    "http_request",
+                    method=scope["method"],
+                    path=scope["path"],
+                    status=status,
+                    duration_ms=round(elapsed * 1000, 2),
+                )
+        finally:
+            request_id_var.reset(token)
 
 
-def _route_pattern(request: Request) -> str:
+_HTTP_METHODS = frozenset(
+    {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"}
+)
+
+
+def _route_pattern(request_or_scope) -> str:
     """Low-cardinality route label (path template, not raw path)."""
-    route = request.scope.get("route")
-    return getattr(route, "path", request.url.path)
+    scope = (
+        request_or_scope
+        if isinstance(request_or_scope, dict)
+        else request_or_scope.scope
+    )
+    route = scope.get("route")
+    return getattr(route, "path", None) or "unmatched"

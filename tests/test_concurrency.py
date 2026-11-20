@@ -36,6 +36,7 @@ async def test_concurrent_first_transfers_between_new_pair(client, test_db_url):
                 "idempotency_key": f"burst-{i}",
             },
         )
+
     responses = await asyncio.gather(*[fire(i) for i in range(20)])
 
     statuses = sorted(r.status_code for r in responses)
